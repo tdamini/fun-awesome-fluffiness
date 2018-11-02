@@ -42,6 +42,19 @@ public class SortMerge extends Iterator implements GlobalConst {
 	private FldSpec proj_list[];
 	private int n_out_flds;
 
+	private Sort sortR, sortS;
+
+	private byte matchSpace[][];
+	private Heapfile innerHeap;
+
+	Tuple joinTuple = new Tuple();
+	AttrType[] joinTypes;
+	short[] ts_size = null;
+	IoBuf matchBuf = new IoBuf();
+
+	Tuple tupleR;
+	Tuple tupleS;
+
 	/**
 	 * constructor,initialization
 	 * 
@@ -63,7 +76,7 @@ public class SortMerge extends Iterator implements GlobalConst {
 	 * @param order        The order of the tuple: assending or desecnding?
 	 * @param              outFilter[] Ptr to the output filter
 	 * @param proj_list    Shows what input fields go where in the output tuple
-	 * @param n_out_flds   Number of outer relation fileds
+	 * @param n_out_flds   Number of outer relation fields
 	 * @exception JoinNewFailed             Allocate failed
 	 * @exception JoinLowMemory             Memory not enough
 	 * @exception SortException             Exception from sorting
@@ -124,11 +137,29 @@ public class SortMerge extends Iterator implements GlobalConst {
 		if (in1_sorted == false) {
 			// Sort(AttrType[] in, short len_in, short[] str_sizes, Iterator am, int
 			// sort_fld, TupleOrder sort_order, int sort_fld_len, int n_pages)
-			Sort sortR = new Sort(in1, (short) len_in1, s1_sizes, am1, join_col_in1, order, sortFld1Len, amt_of_mem);
+			sortR = new Sort(in1, (short) len_in1, s1_sizes, am1, join_col_in1, order, sortFld1Len, amt_of_mem);
 		}
 		if (in2_sorted == false) {
-			Sort sortS = new Sort(in2, (short) len_in2, s2_sizes, am2, join_col_in2, order, sortFld2Len, amt_of_mem);
+			sortS = new Sort(in2, (short) len_in2, s2_sizes, am2, join_col_in2, order, sortFld2Len, amt_of_mem);
 		}
+
+		tupleR = sortR.get_next();
+		tupleS = sortS.get_next();
+
+		matchSpace = new byte[1][MINIBASE_PAGESIZE];
+
+		innerHeap = null;
+
+		try {
+			innerHeap = new Heapfile(null);
+		} catch (Exception e) {
+			throw new SortException(e, "Creating heapfile for IoBuf use failed.");
+		}
+
+		matchBuf.init(matchSpace, 1, tupleS.size(), innerHeap);
+
+		joinTypes = new AttrType[n_out_flds];
+		
 
 	} // End of SortMerge constructor
 
@@ -174,7 +205,72 @@ public class SortMerge extends Iterator implements GlobalConst {
 	public Tuple get_next() throws IOException, JoinsException, IndexException, InvalidTupleSizeException,
 			InvalidTypeException, PageNotReadException, TupleUtilsException, PredEvalException, SortException,
 			LowMemException, UnknowAttrType, UnknownKeyTypeException, Exception {
-		return null; // REMOVE THIS!!!
+		/*
+		 * iterate through sortR and sortS to get the tuple using readTuple method above
+		 * compare sortR and sortS to find matching join column value
+		 */
+
+//		tupleR = sortR.get_next();
+//		tupleS = sortS.get_next();
+
+		readTuple(tupleR, am1);
+		readTuple(tupleS, am2);
+
+		int compareBuff;
+
+		if (tupleR != null && tupleS != null) {
+
+			int compareStatus;
+
+			System.out.println("join: " + join_col_in1);
+
+			compareStatus = TupleUtils.CompareTupleWithTuple(in1[join_col_in1 - 1], tupleR, join_col_in1, tupleS,
+					join_col_in2);
+
+			if (compareStatus == 1) {
+				tupleS = sortS.get_next();
+				readTuple(tupleS, am2);
+
+			} else if (compareStatus == -1) {
+				tupleR = sortR.get_next();
+				readTuple(tupleR, am1);
+
+				compareBuff = TupleUtils.CompareTupleWithTuple(in1[join_col_in1 - 1], tupleR, join_col_in1,
+						matchBuf.Get(tupleR), join_col_in2);
+
+				if (compareBuff == 0) {
+					// join
+					ts_size = TupleUtils.setup_op_tuple(joinTuple, joinTypes, in1, len_in1, in2, len_in2, s1_sizes,
+							s2_sizes, proj_list, n_out_flds);
+
+				} else {
+					matchBuf.init(matchSpace, 1, tupleS.size(), innerHeap);
+				}
+
+			} else {
+				// ioBuf
+//				buf.init(matchSpace, 1, tupleS.size(), innerHeap);
+
+				matchBuf.Put(tupleS);
+				// System.out.println("Tupple S match buf: " + matchBuf.Get(tupleS).size());
+
+				// joining the tuples
+				ts_size = TupleUtils.setup_op_tuple(joinTuple, joinTypes, in1, len_in1, in2, len_in2, s1_sizes,
+						s2_sizes, proj_list, n_out_flds);
+				
+				joinTuple.setHdr((short) n_out_flds, joinTypes, ts_size);
+
+
+				// getting the next tuple in tupleS
+				tupleS = sortS.get_next();
+				readTuple(tupleS, am2);
+
+			}
+
+		}
+
+		return null;
+
 	} // End of get_next
 
 	/*--------------------------------------------------------------------------*/
